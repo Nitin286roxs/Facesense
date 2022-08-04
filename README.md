@@ -14,14 +14,9 @@ This repository contains a highly configurable two-stage-tracker that adjusts to
 
 If you already cloned and forgot to use `--recurse-submodules` you can run `git submodule update --init`
 
-2. Make sure that you fulfill all the requirements: Python 3.8 or later with all [requirements.txt](https://github.com/mikel-brostrom/Yolov5_DeepSort_Pytorch/blob/master/requirements.txt) dependencies installed, including torch>=1.7. To install, run:
+2. Download yolov5 model weight, trained classifier weights and test video from [Drive](https://drive.google.com/drive/folders/1L42bVQXbcNH2kV56Ep9otcry2pDB1hVQ?usp=sharing)
 
-`pip install -r requirements.txt`
-
-
-## Tracking sources
-
-Tracking can be run on most video formats
+3. Pull prebuilt docker image, and run the facesense.sh shell file
 
 ```bash
 $ docker pull nitinroxx/nvidia-tensorflow-11.6:v1
