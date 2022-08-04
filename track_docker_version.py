@@ -218,9 +218,24 @@ def run(
     curr_frames, prev_frames = [None] * nr_sources, [None] * nr_sources
     gender_model_path = "face_classification.model"
     gender_model = load_model(gender_model_path)
-    gender_classes = ['GOWTHAMI','NITIN', 'PAVAN', 'RAJU', 'SANTHA', 'SONU', 'SRDHAR', 'SUJAY', 'VIDYA']
+    gender_classes = ["GOWTHAMI", "NITIN", "PAVAN", "RAJU", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
     gender_label = None
     unique_seen_count_bilboard = {"male":[],"female":[]}
+    #TODO record attendence and trackID
+    person_attendence = []
+    #attendence_record = []
+    curr_date = None
+    face_buffer = {}
+    curr_tracked_id = []
+    imgstring_buffer = {}
+    field_names = ['EmpoloyeeName', 'Availibilty', 'AttendenceTime']
+    for person_name in gender_classes:
+        temp_attendence = {}
+        temp_attendence["EmpoloyeeName"] = person_name
+        temp_attendence["Availibilty"] = "Absent"
+        temp_attendence["AttendenceTime"] = None
+        person_attendence.append(temp_attendence)
+    print(f"person_attendence: {person_attendence}")
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -279,6 +294,8 @@ def run(
             s_time = time.time()*1000
             #im0 = draw_mask(im0)
             e_time = time.time()*1000
+            import copy
+            deep_im0 = copy.deepcopy(im0)
             print(f"Time taken to draw mask: {e_time - s_time}msec.")
             im0 = cv2.polylines(im0, [pts],
                       isClosed, color, thickness)
@@ -320,7 +337,7 @@ def run(
                                                      polygon_roi[1][0], polygon_roi[2][1]]
                         iou_conf = iou_check(bboxes, polygon_roi)
                         if iou_conf > 0.8 and int(cls)==1:
-                            person_crop = im0[int(output[1]):int(output[3]), int(output[0]):int(output[2])]
+                            person_crop = deep_im0[int(output[1]):int(output[3]), int(output[0]):int(output[2])]
                             face_crop = cv2.resize(person_crop, (112,112))
                             # apply face classifier on face
                             if face_model_type != "resnet50": 
@@ -352,6 +369,83 @@ def run(
                                 print(f"ResNet50 classifier infertime: {e_time-s_time} msec.")
                                 topk = labels.topk(3)[1].cpu().numpy()[0][0]
                                 gender_label = face_name[int(topk)]
+                                #Track all faces
+                                if str(id) not in face_buffer:
+                                    face_buffer[str(id)] = {}
+                                if gender_label not in face_buffer[str(id)]:
+                                    face_buffer[str(id)][gender_label] = 0
+                                face_buffer[str(id)][gender_label] += 1 
+                                #Check if buffer length is 20
+                                if len(curr_tracked_id)>=20:
+                                    curr_tracked_id.pop(0)
+                                unique_ids = sorted(list(set(curr_tracked_id)))
+                                curr_tracked_id.append(id)
+                                tolal_face_detected = sum(face_buffer[str(id)].values())
+                                correct_person_name = max(zip(face_buffer[str(id)].values(), face_buffer[str(id)].keys()))[1]
+                                print(f"tolal_face_detected: {tolal_face_detected}")
+                                print(f"face_buffer: {face_buffer}")
+                                temp_index = [index for index in range(len(person_attendence)) \
+                                                  if person_attendence[index]["EmpoloyeeName"]==correct_person_name][0]
+                                if tolal_face_detected >= 20 and person_attendence[temp_index]["Availibilty"] == "Absent":
+                                    #person_attendence[correct_person_name] = "Present"
+                                    from time import localtime, strftime
+                                    date_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
+                                    curr_date, curr_time = date_time.split(" ")
+                                    person_attendence[temp_index]["Availibilty"] = "Present"
+                                    person_attendence[temp_index]["AttendenceTime"] = curr_time
+                                    #attendence_record.append([correct_person_name, curr_time])
+                                if (str(id) not in imgstring_buffer) and tolal_face_detected >=20:
+                                    person_crop_60x60 = cv2.resize(person_crop,(100,100))
+                                    imgstring_buffer[str(id)] =  person_crop_60x60
+                                # Remove snap from buffer
+                                seen_ids = list(imgstring_buffer.keys())
+                                print(f"unique_ids: {unique_ids}")
+                                print(f"seen_ids: {seen_ids}")
+                                for temp_id in seen_ids:
+                                    if int(temp_id) not in unique_ids:
+                                        del imgstring_buffer[temp_id]
+                                # Add snap on debug images
+                                seen_ids = list(imgstring_buffer.keys())
+                                print(f"unique_ids: {unique_ids}")
+                                print(f"seen_ids: {seen_ids}")
+                                count_temp = 0
+                                size = 100 
+                                if seen_ids:
+                                    for temp_id in unique_ids:
+                                        tolal_face_detected = sum(face_buffer[str(temp_id)].values())
+                                        if tolal_face_detected>20:
+                                            temp_id_cv_img = imgstring_buffer[str(temp_id)]
+                                            p1 = (annotator.im.shape[1]-(2*size), (((count_temp*2)+1)*size))
+                                            p2 = (annotator.im.shape[1]-size, (((count_temp*2)+1)*size)+size)
+                                            annotator.im[p1[1]:p2[1], p1[0]:p2[0]] = temp_id_cv_img
+                                            # Adding Name Label
+                                            cv2.rectangle(annotator.im, p1, p2, (0,0,255), thickness=1, lineType=cv2.LINE_AA)
+                                            correct_person_name = max(zip(face_buffer[str(temp_id)].values(), face_buffer[str(temp_id)].keys()))[1]
+                                            lw = 2
+                                            tf = max(lw - 1, 1)
+                                            w, h = cv2.getTextSize(correct_person_name, 0, fontScale=lw/3, thickness=tf)[0]
+                                            outside = p1[1] - h >= 0
+                                            p2_ = p1[0] + w, p1[1] - h - 3 if outside else p1[1] + h + 3
+                                            cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
+                                            cv2.putText(annotator.im, correct_person_name, (p1[0], p1[1] - 2 \
+                                                        if outside else p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
+                                                        thickness=tf, lineType=cv2.LINE_AA)
+                                            #Adding Attendence time label
+                                            temp_index = [index for index in range(len(person_attendence))\
+                                                          if person_attendence[index]["EmpoloyeeName"]==correct_person_name][0]
+                                            attendence_time = person_attendence[temp_index]["AttendenceTime"]
+                                            w, h = cv2.getTextSize(attendence_time, 0, fontScale=lw/3, thickness=tf)[0]
+                                            outside = p1[1] + h >= 0
+                                            p1 = (p1[0], p2[1])
+                                            p2_ = p1[0] + w, p1[1] + h + 3
+                                            cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
+                                            cv2.putText(annotator.im, attendence_time, (p1[0], p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
+                                                        thickness=tf, lineType=cv2.LINE_AA)
+                                            count_temp += 1
+                                        else:
+                                            continue
+                                print(f"person_attendence: {person_attendence}")
+                                #print(f"attendence_record: {attendence_record}")
                                 print(f"gender_label: {gender_label}")
                                 print(f"topk: {topk}")
                             if save_txt:
@@ -455,7 +549,13 @@ def run(
                 vid_writer[i].write(im0)
 
             prev_frames[i] = curr_frames[i]
-
+    #Export to csv
+    import csv
+    with open(f'{curr_date}.csv', 'w') as f:
+        # using csv.writer method from CSV package
+        write = csv.DictWriter(f, fieldnames = field_names)
+        write.writeheader()
+        write.writerows(person_attendence)
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms strong sort update per image at shape {(1, 3, *imgsz)}' % t)
