@@ -1,6 +1,6 @@
 # Face Recongnition with Yolov5 + StrongSORT with OSNet and ResNet50 FR classifier
 
-![avatar](figures/ppe_sample.gif)
+![avatar](demo.gif)
 
 ## Introduction
 
