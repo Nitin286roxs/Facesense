@@ -29,4 +29,4 @@ $ root@68dc4e0c6db8:/WS# ./facesense.sh
 
 ## Contact 
 
-For Yolov5 DeepSort OSNet bugs and feature requests please visit [GitHub Issues](https://github.com/Nitin286roxs/Facesense/issues). For business inquiries or professional support requests please send an email to: nitinashu1994@gmail.com
+For Yolov5 DeepSort OSNet bugs and feature requests please visit [GitHub Issues](https://github.com/Nitin286roxs/Facesense/issues). For business inquiries or professional support requests please send an email to: nitinashu1995@gmail.com
