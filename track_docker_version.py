@@ -2,8 +2,10 @@
 #polygon_roi = [[640,275], [1345,275], [1700,1080], [455,1080]] #OLD View
 
 # Gallery roi
-#polygon_roi = [[555,325], [1140,325], [1683,1295], [665,1295]] #OLD View
-polygon_roi = [[555,125], [1645,125], [1750, 520], [1528,1295], [665,1295]] #Final ROI
+polygon_roi = [[0,200], [1340,200], [1340,1080], [0,1080]]
+polygon_roi = [[350,405], [2304,405], [2304,1296], [350,1296]]
+
+#polygon_roi = [[574,338], [1704,338], [1750, 520], [1528,1295], [665,1295]] #Final ROI
 import argparse
 
 import os
@@ -16,9 +18,11 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import sys
 import time
+import math
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import random
 import torch
 import torch.backends.cudnn as cudnn
 
@@ -33,6 +37,9 @@ if str(ROOT / 'yolov5') not in sys.path:
     sys.path.append(str(ROOT / 'yolov5'))  # add yolov5 ROOT to PATH
 if str(ROOT / 'strong_sort') not in sys.path:
     sys.path.append(str(ROOT / 'strong_sort'))  # add strong_sort ROOT to PATH
+#setting path for gaze estimation
+if str(ROOT / 'gaze_estimation') not in sys.path:
+    sys.path.append(str(ROOT / 'gaze_estimation'))  # add strong_sort ROOT to PA
 if str(ROOT / 'deepface') not in sys.path:
     sys.path.append(str(ROOT / 'deepface'))  # add strong_sort ROOT to PATH
 if str(ROOT / 'face_recognition_embedding/') not in sys.path:
@@ -51,6 +58,7 @@ from yolov5.utils.plots import Annotator, colors, save_one_box
 from strong_sort.utils.parser import get_config
 from strong_sort.strong_sort import StrongSORT
 from tensorflow.keras.utils import img_to_array
+from gaze_estimation import get_eye_box
 #from keras.models import load_model
 from keras.models import Model, Sequential, load_model
 from keras.layers import Input, Convolution2D, LocallyConnected2D, MaxPooling2D, Flatten, Dense, Dropout
@@ -63,6 +71,26 @@ from deepface import DeepFace
 # remove duplicated stream handler to avoid duplicated logging
 logging.getLogger().removeHandler(logging.getLogger().handlers[0])
 
+def automate_histogram_mid(mean):
+    # For Darker Image
+    if mean < 75:
+        mid = random.choice([0.5, 0.6, 0.7])
+    # For Average Lighting Image
+    elif mean >= 75 and mean <= 130:
+        mid = random.choice([.2,.3,.4, 0.5, 0.6, 0.7])
+    # For Brighter Image
+    else:
+        mid = random.choice([0.2, 0.3, 0.4,.5])
+    return mid
+
+def adjust_gamma(image, gamma=1.0):
+    # build a lookup table mapping the pixel values [0, 255] to
+    # their adjusted gamma values
+    lookUpTable = np.empty((1,256), np.uint8)
+    for i in range(256):
+        lookUpTable[0,i] = np.clip(pow(i / 255.0, gamma) * 255.0, 0, 255)
+    # apply gamma correction using the lookup table
+    return cv2.LUT(image, lookUpTable)
 
 def draw_mask(cv_img):
     from skimage import filters
@@ -180,10 +208,10 @@ def run(
     # Load face classifier model
     # create model
     #face_model_type = "vggnet" #"resnet50"
-    face_model_type = "resnet50"
+    face_model_type = "embeded_FR"
     model_checkpoints = "resnet50_face_classifier/checkpoint-19.pth.tar" #checkpoint-32.pth.tar"
     number_of_person = 8 #9
-    face_name = ["GOWTHAMI", "KIRAN", "NITIN", "PAVAN", "RAJU", "RAKSHITA", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
+    face_name = ["GOWTHAMI", "KARTHIK", "KIRAN", "MANIKCHAND", "NITIN", "PAVAN", "RAJU", "RAKSHITA", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
     if face_model_type == "resnet50":
         face_model = create_model(
             face_model_type,
@@ -193,7 +221,12 @@ def run(
             checkpoint_path=model_checkpoints)
         face_model = face_model.cuda()
         face_model.eval()
-
+    # Imagezmq Sender
+    import imagezmq
+    sender = imagezmq.ImageSender(connect_to='tcp://*:5555', REQ_REP=False)
+    host_name = 'From Sender'
+    # OpenCV facedetection model 
+    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
     # Dataloader
     if webcam:
         show_vid = False #check_imshow()
@@ -235,12 +268,14 @@ def run(
     gender_model_path = "face_classification.model"
     gender_model = load_model(gender_model_path)
     gender_classes = ["GOWTHAMI", "NITIN", "PAVAN", "RAJU", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
-    gender_label = None
+    gender_label = "Unknown"
     unique_seen_count_bilboard = {"male":[],"female":[]}
     #TODO record attendence and trackID
     person_attendence = []
     #attendence_record = []
     curr_date = None
+    curr_time = None
+    is_csv_dumped = False
     face_buffer = {}
     curr_tracked_id = []
     imgstring_buffer = {}
@@ -249,8 +284,8 @@ def run(
     face_model_type = "embeded_FR"
     employees = dict()
     known_people_folder = None
-    buffer_length = 20
-    id_buffer_len = 100
+    buffer_length = 5 
+    id_buffer_len = 80
     if face_model_type == "embeded_classifier":
         # Get similar images of test images for ResNet-50 (b)
         resnet_model_b = getResNet50Model(lastFourTrainable=True)
@@ -272,6 +307,7 @@ def run(
                 img_path = f"{known_people_folder}/{person_name}.jpeg"
             else:
                 img_path =  f"{known_people_folder}/{person_name}.png"
+            print(f"img_path: {img_path}")
             if os.path.isfile(img_path):
                 person_image = face_recognition.load_image_file(img_path) 
                 person_face_encoding = face_recognition.face_encodings(person_image)[0]
@@ -283,9 +319,10 @@ def run(
         temp_attendence["EmpoloyeeName"] = person_name
         temp_attendence["Availibilty"] = "Absent"
         temp_attendence["AttendenceTime"] = None
-        temp_attendence["EntranceId"] = None
+        temp_attendence["EntranceId"] = []
         person_attendence.append(temp_attendence)
     print(f"person_attendence: {person_attendence}")
+    last_tracked_id = []
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -305,9 +342,10 @@ def run(
         # Apply NMS
         pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
         # Running openvino model for face and eye dertection
-        #isFace = False
+        isFace = False
         #s_time = time.time()*1000
-        is_eye_visible = True
+        is_face_visible = True
+        #im0s, is_face_visible = get_eye_box([], im0s, isFace, polygon_roi)
         #e_time = time.time()*1000
         dt[2] += time_sync() - t3
         
@@ -355,6 +393,7 @@ def run(
             if cfg.STRONGSORT.ECC:  # camera motion compensation
                 strongsort_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
 
+            current_tracked_id = []
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
@@ -380,15 +419,19 @@ def run(
     
                         bboxes = output[0:4]
                         id = int(output[4])
+                        current_tracked_id.append(id)
                         cls = output[5]
                         roi = [polygon_roi[0][0], polygon_roi[0][1],\
                                                      polygon_roi[1][0], polygon_roi[2][1]]
                         iou_conf = iou_check(bboxes, polygon_roi)
                         if iou_conf > 0.8 and int(cls)==1:
+                            gender_label = "Unknown"
+                            curr_tracked_id.append(id)
+                            face_gamma = None
                             person_crop = deep_im0[int(output[1]):int(output[3]), int(output[0]):int(output[2])]
-                            face_crop = cv2.resize(person_crop, (112,112))
                             # apply face classifier on face
                             if face_model_type == "vggnet": 
+                                face_crop = cv2.resize(person_crop, (112,112))
                                 face_crop = face_crop.astype("float") / 255.0
                                 face_crop = img_to_array(face_crop)
                                 face_crop = np.expand_dims(face_crop, axis=0)
@@ -400,6 +443,7 @@ def run(
                             elif face_model_type == "full_classifier":
                                 # Resnet50 preprocessing
                                 s_time = time.time()*1000
+                                face_crop = cv2.resize(person_crop, (112,112))
                                 resnet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
                                 resnet_scale = np.array([0.229, 0.224, 0.225], dtype=np.float32)
                                 face_crop_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
@@ -418,18 +462,42 @@ def run(
                                 topk = labels.topk(3)[1].cpu().numpy()[0][0]
                                 gender_label = face_name[int(topk)]
                             elif face_model_type == "embeded_FR":
-                                unknown_image = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
-                                pil_image=Image.fromarray(unknown_image)
-                                face_locations = face_recognition.face_locations(unknown_image)
-                                face_encodings = face_recognition.face_encodings(unknown_image, face_locations)
-                                print(f"len of face encodings: {len(face_encodings)}")
-                                if len(face_encodings):
-                                    matches = face_recognition.compare_faces(known_face_encodings, face_encodings[0])
-                                    name = "Unknown"
-                                    face_distances = face_recognition.face_distance(known_face_encodings, face_encodings[0])
-                                    best_match_index = np.argmin(face_distances)
-                                    if matches[best_match_index]:
-                                        gender_label = face_name[best_match_index]
+                                #TODO Face gamma correction
+                                if is_face_visible:
+                                    face_temp_gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
+                                    mean = np.mean(face_temp_gray)
+                                    mid = automate_histogram_mid(mean)
+                                    gamma = math.log(mid)/math.log(mean/255)
+                                    # do gamma correction
+                                    face_gamma = adjust_gamma(person_crop, gamma)
+                                    s_time = time.time()*1000
+                                    #small_frame = cv2.resize(person_crop, (0, 0), fx=0.25, fy=0.25)
+                                    unknown_image = cv2.cvtColor(face_gamma, cv2.COLOR_BGR2RGB)
+                                    pil_image=Image.fromarray(unknown_image)
+                                    se_time = time.time()*1000
+                                    face_locations = face_recognition.face_locations(unknown_image)
+                                    ee_time = time.time()*1000
+                                    print(f"time to get face location: {ee_time-se_time }msec")
+                                    print(f"len of face bbox: {int(output[1]), int(output[3]), int(output[0]), int(output[2])}")
+                                    print(f"len of face locations: {(face_locations)}")
+                                    if len(face_locations):
+                                        se_time = time.time()*1000
+                                        face_encodings = face_recognition.face_encodings(unknown_image, face_locations)
+                                        ee_time = time.time()*1000
+                                        print(f"time to get face embedding: {ee_time-se_time }msec")
+                                        print(f"len of face encodings: {len(face_encodings)}")
+                                        matches = face_recognition.compare_faces(known_face_encodings, face_encodings[0])
+                                        name = "Unknown"
+                                        face_distances = face_recognition.face_distance(known_face_encodings, face_encodings[0])
+                                        best_match_index = np.argmin(face_distances)
+                                        if matches[best_match_index]:
+                                            gender_label = face_name[best_match_index]
+                                        else:
+                                            gender_label = name
+                                    e_time = time.time()*1000
+                                    print(f"time taken to FR: {e_time-s_time}msec.")
+                                else:
+                                    gender_label = "Unknown"
                             elif face_model_type == "deepface":
                                 cv2.imwrite("temp_face.jpg", person_crop)
                                 df_res = DeepFace.find(img_path = "temp_face.jpg",\
@@ -448,7 +516,8 @@ def run(
                             #Track all faces
                             if str(id) not in face_buffer:
                                 face_buffer[str(id)] = {}
-                            if gender_label:
+                            print(f"gender_label: {gender_label}")
+                            if gender_label!="Unknown":
                                 if gender_label not in face_buffer[str(id)]:
                                     face_buffer[str(id)][gender_label] = 0
                                 face_buffer[str(id)][gender_label] += 1 
@@ -456,30 +525,38 @@ def run(
                                 if len(curr_tracked_id)>=id_buffer_len:
                                     curr_tracked_id.pop(0)
                                 unique_ids = sorted(list(set(curr_tracked_id)))
-                                curr_tracked_id.append(id)
                                 tolal_face_detected = sum(face_buffer[str(id)].values())
                                 correct_person_name = max(zip(face_buffer[str(id)].values(), face_buffer[str(id)].keys()))[1]
                                 print(f"tolal_face_detected: {tolal_face_detected}")
                                 print(f"face_buffer: {face_buffer}")
                                 temp_index = None
+                                temp_index = [index for index in range(len(person_attendence)) \
+                                                  if person_attendence[index]["EmpoloyeeName"]==correct_person_name]
                                 temp_id = [index for index in range(len(person_attendence))\
-                                                          if person_attendence[index]["EntranceId"]==id]
-                                if len(temp_id) == 0:
-                                    temp_index = [index for index in range(len(person_attendence)) \
-                                                  if person_attendence[index]["EmpoloyeeName"]==correct_person_name][0]
-                                else:
-                                    temp_index = temp_id[0]
-                                if tolal_face_detected >= buffer_length and person_attendence[temp_index]["Availibilty"] == "Absent":
+                                                          if id in person_attendence[index]["EntranceId"]]
+                                if len(temp_id)>0:
+                                    if temp_id[0]!=temp_index[0]:
+                                        max_id = max(person_attendence[temp_id[0]]["EntranceId"])
+                                        if id == max_id:
+                                            person_attendence[temp_id[0]]["Availibilty"] = "Absent"
+                                            person_attendence[temp_id[0]]["AttendenceTime"] = None
+                                        person_attendence[temp_id[0]]["EntranceId"].remove(id)
+                                #else:
+                                temp_index = temp_index[0]
+                                size = 75 
+                                #if tolal_face_detected >= buffer_length and person_attendence[temp_index]["Availibilty"] == "Absent":
+                                if tolal_face_detected >= buffer_length:
                                     #person_attendence[correct_person_name] = "Present"
-                                    from time import localtime, strftime
-                                    date_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
-                                    curr_date, curr_time = date_time.split(" ")
-                                    person_attendence[temp_index]["Availibilty"] = "Present"
-                                    person_attendence[temp_index]["AttendenceTime"] = curr_time
-                                    person_attendence[temp_index]["EntranceId"] = id
-                                    #attendence_record.append([correct_person_name, curr_time])
-                                    if (str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length:
-                                        person_crop_60x60 = cv2.resize(person_crop,(100,100))
+                                    if person_attendence[temp_index]["Availibilty"] == "Absent":
+                                        from time import localtime, strftime
+                                        date_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
+                                        curr_date, curr_time = date_time.split(" ")
+                                        person_attendence[temp_index]["Availibilty"] = "Present"
+                                        person_attendence[temp_index]["AttendenceTime"] = curr_time
+                                    if id not in person_attendence[temp_index]["EntranceId"]:
+                                        person_attendence[temp_index]["EntranceId"].append(id)
+                                    if ((str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length):
+                                        person_crop_60x60 = cv2.resize(face_gamma,(size,size))
                                         imgstring_buffer[str(id)] =  person_crop_60x60
                                 # Remove snap from buffer
                                 seen_ids = list(imgstring_buffer.keys())
@@ -493,48 +570,52 @@ def run(
                                 print(f"unique_ids: {unique_ids}")
                                 print(f"seen_ids: {seen_ids}")
                                 count_temp = 0
-                                size = 100 
                                 if seen_ids:
-                                    for temp_id in unique_ids:
-                                        tolal_face_detected = sum(face_buffer[str(temp_id)].values())
-                                        if tolal_face_detected>buffer_length:
-                                            temp_index = [index for index in range(len(person_attendence))\
-                                                          if person_attendence[index]["EntranceId"]==temp_id]
-                                            if temp_index:
+                                    for temp_id in last_tracked_id:
+                                        print(f"temp_id: {temp_id} and seen_ids: {seen_ids}")
+                                        if str(temp_id) in seen_ids:
+                                            tolal_face_detected = sum(face_buffer[str(temp_id)].values())
+                                            temp_index = None
+                                            if tolal_face_detected>buffer_length:
                                                 temp_index = [index for index in range(len(person_attendence))\
-                                                              if person_attendence[index]["EntranceId"]==temp_id][0]
-                                                temp_id_cv_img = imgstring_buffer[str(temp_id)]
-                                                p1 = (annotator.im.shape[1]-(2*size), (((count_temp*2)+1)*size))
-                                                p2 = (annotator.im.shape[1]-size, (((count_temp*2)+1)*size)+size)
-                                                annotator.im[p1[1]:p2[1], p1[0]:p2[0]] = temp_id_cv_img
-                                                # Adding Name Label
-                                                cv2.rectangle(annotator.im, p1, p2, (0,0,255), thickness=1, lineType=cv2.LINE_AA)
-                                                correct_person_name = person_attendence[temp_index]["EmpoloyeeName"]
-                                                #correct_person_name = max(zip(face_buffer[str(temp_id)].values(), \
-                                                #                              face_buffer[str(temp_id)].keys()))[1]
-                                                lw = 2
-                                                tf = max(lw - 1, 1)
-                                                w, h = cv2.getTextSize(correct_person_name, 0, fontScale=lw/3, thickness=tf)[0]
-                                                outside = p1[1] - h >= 0
-                                                p2_ = p1[0] + w, p1[1] - h - 3 if outside else p1[1] + h + 3
-                                                cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
-                                                cv2.putText(annotator.im, correct_person_name, (p1[0], p1[1] - 2 \
-                                                            if outside else p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
-                                                            thickness=tf, lineType=cv2.LINE_AA)
-                                                #Adding Attendence time label
-                                                temp_index = [index for index in range(len(person_attendence))\
-                                                              if person_attendence[index]["EntranceId"]==temp_id][0]
-                                                attendence_time = person_attendence[temp_index]["AttendenceTime"]
-                                                w, h = cv2.getTextSize(attendence_time, 0, fontScale=lw/3, thickness=tf)[0]
-                                                outside = p1[1] + h >= 0
-                                                p1 = (p1[0], p2[1])
-                                                p2_ = p1[0] + w, p1[1] + h + 3
-                                                cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
-                                                cv2.putText(annotator.im, attendence_time, (p1[0], p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
-                                                            thickness=tf, lineType=cv2.LINE_AA)
-                                                count_temp += 1
-                                        else:
-                                            continue
+                                                          if temp_id in person_attendence[index]["EntranceId"]]
+                                                if len(temp_index) == 0:
+                                                    temp_index = [index for index in range(len(person_attendence)) \
+                                                                  if person_attendence[index]["EmpoloyeeName"]==correct_person_name][0]
+                                                if len(temp_index)>0:
+                                                    temp_index = temp_index[0]
+                                                    temp_id_cv_img = imgstring_buffer[str(temp_id)]
+                                                    p1 = (annotator.im.shape[1]-(2*size), (((count_temp*2)+1)*size))
+                                                    p2 = (annotator.im.shape[1]-size, (((count_temp*2)+1)*size)+size)
+                                                    annotator.im[p1[1]:p2[1], p1[0]:p2[0]] = temp_id_cv_img
+                                                    # Adding Name Label
+                                                    cv2.rectangle(annotator.im, p1, p2, (0,0,255), thickness=1, lineType=cv2.LINE_AA)
+                                                    correct_person_name = person_attendence[temp_index]["EmpoloyeeName"]
+                                                    #correct_person_name = max(zip(face_buffer[str(temp_id)].values(), \
+                                                    #                              face_buffer[str(temp_id)].keys()))[1]
+                                                    lw = 2
+                                                    tf = max(lw - 1, 1)
+                                                    w, h = cv2.getTextSize(correct_person_name, 0, fontScale=lw/3, thickness=tf)[0]
+                                                    outside = p1[1] - h >= 0
+                                                    p2_ = p1[0] + w, p1[1] - h - 3 if outside else p1[1] + h + 3
+                                                    cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
+                                                    cv2.putText(annotator.im, correct_person_name, (p1[0], p1[1] - 2 \
+                                                                if outside else p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
+                                                                thickness=tf, lineType=cv2.LINE_AA)
+                                                    #Adding Attendence time label
+                                                    temp_index = [index for index in range(len(person_attendence))\
+                                                                  if temp_id in person_attendence[index]["EntranceId"]][0]
+                                                    attendence_time = person_attendence[temp_index]["AttendenceTime"]
+                                                    w, h = cv2.getTextSize(attendence_time, 0, fontScale=lw/3, thickness=tf)[0]
+                                                    outside = p1[1] + h >= 0
+                                                    p1 = (p1[0], p2[1])
+                                                    p2_ = p1[0] + w, p1[1] + h + 3
+                                                    cv2.rectangle(annotator.im, p1, p2_, (0, 0, 255), -1, cv2.LINE_AA)  # filled
+                                                    cv2.putText(annotator.im, attendence_time, (p1[0], p1[1] + h + 2), 0, lw / 3, (255, 255, 255), \
+                                                                thickness=tf, lineType=cv2.LINE_AA)
+                                                    count_temp += 1
+                                            else:
+                                                continue
                                 print(f"person_attendence: {person_attendence}")
                                 #print(f"attendence_record: {attendence_record}")
                                 print(f"gender_label: {gender_label}")
@@ -556,7 +637,7 @@ def run(
                                 label = gender_label
                                 age_gender_label = f"{id} {label}: {conf:.2f}"
                                 print(f"age_gender_label: {age_gender_label}")
-                                if is_eye_visible and names[c] == "head":
+                                if is_face_visible and names[c] == "head":
                                     #Id = label.strip().split(" ")[0]
                                     if label not in unique_seen_count_bilboard:
                                         unique_seen_count_bilboard[label] = []
@@ -574,6 +655,8 @@ def run(
             else:
                 strongsort_list[i].increment_ages()
                 LOGGER.info('No detections')
+            last_tracked_id = current_tracked_id
+            print(f"last tracked Ids: {last_tracked_id}")
             im0 = annotator.result()
             if save_vid:
                 if vid_path[i] != save_path:  # new video
@@ -585,19 +668,37 @@ def run(
                         w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     else:  # stream
-                        fps, w, h = 1, im0.shape[1], im0.shape[0]
+                        fps, w, h = 15, im0.shape[1], im0.shape[0]
                     save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
                     vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                 vid_writer[i].write(im0)
 
             prev_frames[i] = curr_frames[i]
-    #Export to csv
-    import csv
-    with open(f'{curr_date}.csv', 'w') as f:
-        # using csv.writer method from CSV package
-        write = csv.DictWriter(f, fieldnames = field_names)
-        write.writeheader()
-        write.writerows(person_attendence)
+        #Send image to server to imshow
+        im0 = cv2.resize(im0, (1920, 1080))
+        #im0 = cv2.resize(im0, (1920, 1080),interpolation = cv2.INTER_NEAREST)
+        sender.send_image(host_name, im0)
+        #Export to csv
+        import csv
+        print(f"curr_time: {curr_time}")
+        from time import localtime, strftime
+        date_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
+        curr_date, curr_time = date_time.split(" ")
+        if curr_time:
+            saving_hh, saving_mm, _ = curr_time.split(":")
+            print(f"saving_hh: {saving_hh}, saving_mm: {saving_mm}")
+            if (f"{saving_hh}:{saving_mm}"=="09:45") and not is_csv_dumped:
+                print("\n\n\ saving csv report!! \n\n!! ")
+                with open(f'{curr_date}.csv', 'w') as f:
+                    # using csv.writer method from CSV package
+                    write = csv.DictWriter(f, fieldnames = field_names)
+                    is_csv_dumped = True
+                    write.writeheader()
+                    write.writerows(person_attendence)
+            elif (f"{saving_hh}:{saving_mm}"=="09:45") and is_csv_dumped:
+                print("GOING to stop pipeline!!")
+                sys.exit(0)
+
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms strong sort update per image at shape {(1, 3, *imgsz)}' % t)
