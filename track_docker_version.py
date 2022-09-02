@@ -68,6 +68,8 @@ from resnet50_feature_extract import load_trainable_model, getResNet50Model
 import torchvision.transforms as transforms
 import face_recognition
 from deepface import DeepFace
+import base64
+from pymongo import MongoClient
 # remove duplicated stream handler to avoid duplicated logging
 logging.getLogger().removeHandler(logging.getLogger().handlers[0])
 
@@ -322,6 +324,11 @@ def run(
         temp_attendence["EntranceId"] = []
         person_attendence.append(temp_attendence)
     print(f"person_attendence: {person_attendence}")
+    # MongoDB 
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client["attendance"]
+    daily = db.daily
+
     last_tracked_id = []
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
@@ -549,16 +556,42 @@ def run(
                                     #person_attendence[correct_person_name] = "Present"
                                     if person_attendence[temp_index]["Availibilty"] == "Absent":
                                         from time import localtime, strftime
-                                        date_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
+                                        date_time = strftime("%m-%d-%Y %H:%M:%S", localtime())
                                         curr_date, curr_time = date_time.split(" ")
                                         person_attendence[temp_index]["Availibilty"] = "Present"
                                         person_attendence[temp_index]["AttendenceTime"] = curr_time
+                                        # Record to be add
+                                        person_crop_60x60 = cv2.resize(face_gamma,(size,size))
+                                        IMAGE_STRING = base64.b64encode(cv2.imencode('.bmp', person_crop_60x60)[1]).decode("utf-8")
+                                        record = {\
+                                                  "Date": curr_date,\
+                                                  "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"],\
+                                                  "Availibilty":  person_attendence[temp_index]["Availibilty"],\
+                                                  "AttendenceTime": person_attendence[temp_index]["AttendenceTime"],\
+                                                  "EntranceId": id,\
+                                                  "AttendanceSnippet": IMAGE_STRING\
+                                                  }
+                                        daily.insert_one(record)
+                                        import zmq
+                                        import json 
+                                        context = None
+                                        socket = None
+                                        context = zmq.Context()
+                                        print("Connecting to hello world server !!")
+                                        socket = context.socket(zmq.REQ)
+                                        socket.connect("tcp://localhost:5556")
+                                        curr_timestamp = str(int(time.time()))
+                                        json_data = {"timestamp": curr_timestamp}
+                                        json_str = json.dumps(json_data)
+                                        socket.send_string(json_str)
+                                        message = socket.recv()
+                                        print(f"message: {message}")
+                                       
                                     if id not in person_attendence[temp_index]["EntranceId"]:
                                         person_attendence[temp_index]["EntranceId"].append(id)
                                     if ((str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length):
                                         person_crop_60x60 = cv2.resize(face_gamma,(size,size))
                                         imgstring_buffer[str(id)] =  person_crop_60x60
-                                # Remove snap from buffer
                                 seen_ids = list(imgstring_buffer.keys())
                                 print(f"unique_ids: {unique_ids}")
                                 print(f"seen_ids: {seen_ids}")
