@@ -14,6 +14,7 @@ vid_path, vid_writer = [None] * 1, [None] * 1
 frame_count = 0
 snippet_count = int(time.time())
 lock = threading.Lock()
+concat_lock = threading.Lock()
 # Video request 
 context = zmq.Context()
 #socket = context.socket(zmq.PULL)
@@ -52,11 +53,45 @@ def recorder_thread(img):
     frame_count += 1
     return
 
+def concat_clips(request_timestamp):
+    evidence_dir = "./attendance_evidence/"
+    if not os.path.isdir(evidence_dir):
+        os.mkdir(evidence_dir)
+    # Concat 20 sec. evidence clips
+    File_concat_list = open("mylist.txt", "w")
+    clip_timestamps = sorted([int(os.path.splitext(File)[0]) for File in os.listdir("./clips/")], reverse=True)
+    count = 0
+    String_to_be_concat = ""
+    for clip_timestamp in clip_timestamps:
+        #if count > 0:
+        #    File_concat_list.write("\n")
+        if clip_timestamp <= request_timestamp and (request_timestamp - clip_timestamp)<=20:
+            if count > 0:
+                String_to_be_concat = "\n" + String_to_be_concat
+                #File_concat_list.write("\n")
+            String_to_be_concat = f"file ./clips/{clip_timestamp}.mp4" + String_to_be_concat
+            #File_concat_list.write(f"file ./clips/{clip_timestamp}.mp4")
+            count += 1
+    File_concat_list.write(String_to_be_concat)
+    File_concat_list.close()
+    from datetime import datetime
+    attendance_time = datetime.fromtimestamp(request_timestamp).strftime('%d-%m-%y-%H-%M-%S')
+    os.system(f"ffmpeg -f concat -safe 0 -i mylist.txt -c copy ./attendance_evidence/{attendance_time}.mp4")
+    return 
+
+
 def request_thread():
     while True:
         import json
         request = socket.recv()
         message = json.loads(request)
+        request_timestamp = int(message['timestamp'])
+        concat_lock.acquire()
+        start_time = int(time.time()) + 5
+        concat_clips(request_timestamp)
+        end_time = int(time.time())
+        print(f"Time taken to concat clips: {end_time-start_time}sec.")
+        concat_lock.release()
         print(f"Timestamp in Received request : {message['timestamp']} and timestamp type {type(message['timestamp'])}")
         socket.send(b"World")
     
