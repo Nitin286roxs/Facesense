@@ -28,8 +28,8 @@ $ sudo docker run -d -p 80:80 --name api_server -v /home/nitin/Safepro/Workspace
 3. Pull prebuilt docker image, and run the facesense.sh shell file
 
 ```bash
-$ docker pull nitinroxx/nvidia-tensorflow-11.6:v1
-$ sudo nvidia-docker run -it --net=host -v `pwd`:/WS/ --entrypoint bash nitinroxx/nvidia-tensorflow-11.6:v1
+$ docker pull nitinroxx/facesense:v1
+$ sudo nvidia-docker run -it --net=host --name facesense_local_testing -v `pwd`:/WS/ --entrypoint bash nitinroxx/facesense:v1
 $ root@68dc4e0c6db8:/WS# ./facesense.sh
 ```
 
