@@ -18,6 +18,13 @@ If you already cloned and forgot to use `--recurse-submodules` you can run `git 
 
 2. Download yolov5 model weight, trained classifier weights and test video from [Drive](https://drive.google.com/drive/folders/1L42bVQXbcNH2kV56Ep9otcry2pDB1hVQ?usp=sharing)
 
+3. Run mongodb and apache flask server same docker network
+```bash
+$ sudo docker network create -d bridge facesense-bridge
+$ sudo docker run -d -v /home/nitin/Safepro/Workspace/CrowdAttendence/Yolov5_StrongSORT_OSNet/facesense_db:/data/db -p 27017:27017  --network="facesense-bridge" --name mongodb  mongo:latest
+$ sudo docker run -d -p 80:80 --name api_server -v /home/nitin/Safepro/Workspace/CrowdAttendence/facesense_endpoints/docker_compose_for_apache_flask_setup-main/apache-flask-master/routes.py:/var/www/apache-flask/app/routes.py --network="facesense-bridge" apache-flask-server:v1
+```
+
 3. Pull prebuilt docker image, and run the facesense.sh shell file
 
 ```bash
