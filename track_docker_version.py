@@ -563,15 +563,6 @@ def run(
                                         # Record to be add
                                         person_crop_60x60 = cv2.resize(face_gamma,(size,size))
                                         IMAGE_STRING = base64.b64encode(cv2.imencode('.bmp', person_crop_60x60)[1]).decode("utf-8")
-                                        record = {\
-                                                  "Date": curr_date,\
-                                                  "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"],\
-                                                  "Availibilty":  person_attendence[temp_index]["Availibilty"],\
-                                                  "AttendenceTime": person_attendence[temp_index]["AttendenceTime"],\
-                                                  "EntranceId": id,\
-                                                  "AttendanceSnippet": IMAGE_STRING\
-                                                  }
-                                        daily.insert_one(record)
                                         import zmq
                                         import json 
                                         context = None
@@ -581,11 +572,24 @@ def run(
                                         socket = context.socket(zmq.REQ)
                                         socket.connect("tcp://localhost:5556")
                                         curr_timestamp = str(int(time.time()))
-                                        json_data = {"timestamp": curr_timestamp}
+                                        json_data = {"timestamp": curr_timestamp, "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"]}
                                         json_str = json.dumps(json_data)
                                         socket.send_string(json_str)
                                         message = socket.recv()
                                         print(f"message: {message}")
+                                        response_json = json.loads(message)
+                                        evidence_snippet_path = response_json["Evidence_snippets"]
+                                        record = {\
+                                                  "Date": curr_date,\
+                                                  "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"],\
+                                                  "Availibilty":  person_attendence[temp_index]["Availibilty"],\
+                                                  "AttendenceTime": person_attendence[temp_index]["AttendenceTime"],\
+                                                  "EntranceId": id,\
+                                                  "AttendanceSnippet": IMAGE_STRING,\
+                                                  "EvidenceClip": evidence_snippet_path
+                                                  }
+                                        daily.insert_one(record)
+                                        
                                        
                                     if id not in person_attendence[temp_index]["EntranceId"]:
                                         person_attendence[temp_index]["EntranceId"].append(id)

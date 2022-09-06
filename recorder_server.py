@@ -53,7 +53,7 @@ def recorder_thread(img):
     frame_count += 1
     return
 
-def concat_clips(request_timestamp):
+def concat_clips(request_timestamp, emp_name):
     evidence_dir = "./attendance_evidence/"
     if not os.path.isdir(evidence_dir):
         os.mkdir(evidence_dir)
@@ -75,9 +75,12 @@ def concat_clips(request_timestamp):
     File_concat_list.write(String_to_be_concat)
     File_concat_list.close()
     from datetime import datetime
-    attendance_time = datetime.fromtimestamp(request_timestamp).strftime('%d-%m-%y-%H-%M-%S')
-    os.system(f"ffmpeg -f concat -safe 0 -i mylist.txt -c copy ./attendance_evidence/{attendance_time}.mp4")
-    return 
+    attendance_time = datetime.fromtimestamp(request_timestamp).strftime('%H-%M-%S')
+    evidence_dir = evidence_dir + datetime.fromtimestamp(request_timestamp).strftime('%d-%m-%y')
+    if not os.path.isdir(evidence_dir):
+        os.mkdir(evidence_dir)
+    os.system(f"ffmpeg -f concat -safe 0 -i mylist.txt -c copy {evidence_dir}/{emp_name}_{attendance_time}.mp4")
+    return f"{evidence_dir}/{emp_name}_{attendance_time}.mp4" 
 
 
 def request_thread():
@@ -86,14 +89,18 @@ def request_thread():
         request = socket.recv()
         message = json.loads(request)
         request_timestamp = int(message['timestamp'])
+        empoloyee_name = message['EmpoloyeeName']
         concat_lock.acquire()
         start_time = int(time.time()) + 5
-        concat_clips(request_timestamp)
+        eviedence_clip = concat_clips(request_timestamp,empoloyee_name)
         end_time = int(time.time())
         print(f"Time taken to concat clips: {end_time-start_time}sec.")
         concat_lock.release()
         print(f"Timestamp in Received request : {message['timestamp']} and timestamp type {type(message['timestamp'])}")
-        socket.send(b"World")
+        send_json = message
+        send_json["Evidence_snippets"] = eviedence_clip
+        send_json_str = json.dumps(send_json)
+        socket.send_string(send_json_str)
     
 
 
