@@ -286,7 +286,7 @@ def run(
     face_model_type = "embeded_FR"
     employees = dict()
     known_people_folder = None
-    buffer_length = 5 
+    buffer_length = 2 
     id_buffer_len = 80
     if face_model_type == "embeded_classifier":
         # Get similar images of test images for ResNet-50 (b)
@@ -544,10 +544,22 @@ def run(
                                 if len(temp_id)>0:
                                     if temp_id[0]!=temp_index[0]:
                                         max_id = max(person_attendence[temp_id[0]]["EntranceId"])
-                                        if id == max_id:
+                                        min_id = min(person_attendence[temp_id[0]]["EntranceId"])
+                                        if id == max_id and max_id == min_id:
                                             person_attendence[temp_id[0]]["Availibilty"] = "Absent"
                                             person_attendence[temp_id[0]]["AttendenceTime"] = None
+                                            # Remove record from DB
+                                            from datetime import datetime
+                                            from time import localtime, strftime
+                                            try:
+                                                mm, dd, yy  = map(int, strftime("%m-%d-%Y", localtime()).split("-"))
+                                                myquery = {"$and": [{'Date':{"$gte":\
+                                                           datetime(yy, mm, dd,hour=0,minute=0,second=0)}},{"EntranceId": id}]}
+                                                result = daily.delete_one(myquery)
+                                            except:
+                                                print("Not able to delete record!!")
                                         person_attendence[temp_id[0]]["EntranceId"].remove(id)
+                                        
                                 #else:
                                 temp_index = temp_index[0]
                                 size = 75 
@@ -555,6 +567,8 @@ def run(
                                 if tolal_face_detected >= buffer_length:
                                     #person_attendence[correct_person_name] = "Present"
                                     if person_attendence[temp_index]["Availibilty"] == "Absent":
+                                        from datetime import datetime
+                                        curr_db_date = datetime.now()
                                         from time import localtime, strftime
                                         date_time = strftime("%m-%d-%Y %H:%M:%S", localtime())
                                         curr_date, curr_time = date_time.split(" ")
@@ -580,7 +594,7 @@ def run(
                                         response_json = json.loads(message)
                                         evidence_snippet_path = response_json["Evidence_snippets"]
                                         record = {\
-                                                  "Date": curr_date,\
+                                                  "Date": curr_db_date,\
                                                   "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"],\
                                                   "Availibilty":  person_attendence[temp_index]["Availibilty"],\
                                                   "AttendenceTime": person_attendence[temp_index]["AttendenceTime"],\
@@ -589,8 +603,6 @@ def run(
                                                   "EvidenceClip": evidence_snippet_path
                                                   }
                                         daily.insert_one(record)
-                                        
-                                       
                                     if id not in person_attendence[temp_index]["EntranceId"]:
                                         person_attendence[temp_index]["EntranceId"].append(id)
                                     if ((str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length):
