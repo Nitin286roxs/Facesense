@@ -325,7 +325,9 @@ def run(
         person_attendence.append(temp_attendence)
     print(f"person_attendence: {person_attendence}")
     # MongoDB 
-    client = MongoClient('mongodb://localhost:27017/')
+    client = MongoClient("mongodb://safepro:facesense321@192.168.0.156:27017/attendance")
+    #client = MongoClient("mongodb://safepro:facesense321@3.7.179.66:27017/attendance")
+    #client = MongoClient('mongodb://localhost:27017/')
     db = client["attendance"]
     daily = db.daily
 
@@ -545,20 +547,21 @@ def run(
                                     if temp_id[0]!=temp_index[0]:
                                         max_id = max(person_attendence[temp_id[0]]["EntranceId"])
                                         min_id = min(person_attendence[temp_id[0]]["EntranceId"])
-                                        if id == max_id and max_id == min_id:
-                                            person_attendence[temp_id[0]]["Availibilty"] = "Absent"
-                                            person_attendence[temp_id[0]]["AttendenceTime"] = None
-                                            # Remove record from DB
-                                            from datetime import datetime
-                                            from time import localtime, strftime
-                                            try:
-                                                mm, dd, yy  = map(int, strftime("%m-%d-%Y", localtime()).split("-"))
-                                                myquery = {"$and": [{'Date':{"$gte":\
-                                                           datetime(yy, mm, dd,hour=0,minute=0,second=0)}},{"EntranceId": id}]}
-                                                result = daily.delete_one(myquery)
-                                            except:
-                                                print("Not able to delete record!!")
-                                        person_attendence[temp_id[0]]["EntranceId"].remove(id)
+                                        #if id == max_id and max_id == min_id:
+                                        person_attendence[temp_id[0]]["Availibilty"] = "Absent"
+                                        person_attendence[temp_id[0]]["AttendenceTime"] = None
+                                        id_to_be_remove = person_attendence[temp_id[0]]["EntranceId"]
+                                        # Remove record from DB
+                                        from datetime import datetime
+                                        from time import localtime, strftime
+                                        try:
+                                            mm, dd, yy  = map(int, strftime("%m-%d-%Y", localtime()).split("-"))
+                                            myquery = {"$and": [{'Date':{"$gte":\
+                                                       datetime(yy, mm, dd,hour=0,minute=0,second=0)}},{"EntranceId": id_to_be_remove}]}
+                                            result = daily.delete_one(myquery)
+                                        except:
+                                            print("Not able to delete record!!")
+                                        person_attendence[temp_id[0]]["EntranceId"].remove(id_to_be_remove)
                                         
                                 #else:
                                 temp_index = temp_index[0]
@@ -577,22 +580,22 @@ def run(
                                         # Record to be add
                                         person_crop_60x60 = cv2.resize(face_gamma,(size,size))
                                         IMAGE_STRING = base64.b64encode(cv2.imencode('.bmp', person_crop_60x60)[1]).decode("utf-8")
-                                        import zmq
-                                        import json 
-                                        context = None
-                                        socket = None
-                                        context = zmq.Context()
-                                        print("Connecting to hello world server !!")
-                                        socket = context.socket(zmq.REQ)
-                                        socket.connect("tcp://localhost:5556")
-                                        curr_timestamp = str(int(time.time()))
-                                        json_data = {"timestamp": curr_timestamp, "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"]}
-                                        json_str = json.dumps(json_data)
-                                        socket.send_string(json_str)
-                                        message = socket.recv()
-                                        print(f"message: {message}")
-                                        response_json = json.loads(message)
-                                        evidence_snippet_path = response_json["Evidence_snippets"]
+                                        #import zmq
+                                        #import json 
+                                        #context = None
+                                        #socket = None
+                                        #context = zmq.Context()
+                                        #print("Connecting to hello world server !!")
+                                        #socket = context.socket(zmq.REQ)
+                                        #socket.connect("tcp://localhost:5556")
+                                        #curr_timestamp = str(int(time.time()))
+                                        #json_data = {"timestamp": curr_timestamp, "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"]}
+                                        #json_str = json.dumps(json_data)
+                                        #socket.send_string(json_str)
+                                        #message = socket.recv()
+                                        #print(f"message: {message}")
+                                        #response_json = json.loads(message)
+                                        #evidence_snippet_path = response_json["Evidence_snippets"]
                                         record = {\
                                                   "Date": curr_db_date,\
                                                   "EmpoloyeeName": person_attendence[temp_index]["EmpoloyeeName"],\
@@ -600,14 +603,14 @@ def run(
                                                   "AttendenceTime": person_attendence[temp_index]["AttendenceTime"],\
                                                   "EntranceId": id,\
                                                   "AttendanceSnippet": IMAGE_STRING,\
-                                                  "EvidenceClip": evidence_snippet_path
+                                                  "EvidenceClip": ""
                                                   }
                                         daily.insert_one(record)
-                                    if id not in person_attendence[temp_index]["EntranceId"]:
-                                        person_attendence[temp_index]["EntranceId"].append(id)
-                                    if ((str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length):
-                                        person_crop_60x60 = cv2.resize(face_gamma,(size,size))
-                                        imgstring_buffer[str(id)] =  person_crop_60x60
+                                        if id not in person_attendence[temp_index]["EntranceId"]:
+                                            person_attendence[temp_index]["EntranceId"].append(id)
+                                        if ((str(id) not in imgstring_buffer) and tolal_face_detected >=buffer_length):
+                                            person_crop_60x60 = cv2.resize(face_gamma,(size,size))
+                                            imgstring_buffer[str(id)] =  person_crop_60x60
                                 seen_ids = list(imgstring_buffer.keys())
                                 print(f"unique_ids: {unique_ids}")
                                 print(f"seen_ids: {seen_ids}")
