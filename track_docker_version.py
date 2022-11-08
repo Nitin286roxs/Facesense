@@ -70,6 +70,7 @@ import face_recognition
 from deepface import DeepFace
 import base64
 from pymongo import MongoClient
+import asyncio
 # remove duplicated stream handler to avoid duplicated logging
 logging.getLogger().removeHandler(logging.getLogger().handlers[0])
 
@@ -149,8 +150,34 @@ def findEuclideanDistance(source_representation, test_representation):
 	euclidean_distance = np.sqrt(euclidean_distance)
 	return euclidean_distance
 
+async def calc_embedding(face_crop, known_face_encodings, face_name, id):
+    global all_result
+    person_face_encoding = face_recognition.face_encodings(face_crop)
+    # Find face_name
+    gender_label = "Unknown"
+    name = "Unknown"
+    if len(person_face_encoding) > 0:
+        print(f"length of face_encoding: {(person_face_encoding[0]).shape}")
+        print(f"length of knows face_encoding: {len(known_face_encodings)}")
+        print(f"length of knows face_encoding: {(known_face_encodings[0]).shape}")
+        matches = face_recognition.compare_faces(known_face_encodings, \
+                                                 person_face_encoding[0], tolerance=0.5)
+        face_distances = face_recognition.face_distance(known_face_encodings, \
+                                                        person_face_encoding[0])
+        print(f"length of face_distances: {len(face_distances)}")
+        best_match_index = np.argmin(face_distances)
+        if matches[best_match_index]:
+            gender_label = face_name[best_match_index]
+    else:
+        gender_label = name
+    if id not in all_result:
+        all_result[id] = []
+    if not gender_label == "Unknown":
+        all_result[id].append(gender_label)
+    print(f"Person name: {gender_label}")
+
 @torch.no_grad()
-def run(
+async def run(
         source='0',
         yolo_weights=WEIGHTS / 'yolov5m.pt',  # model.pt path(s),
         strong_sort_weights=WEIGHTS / 'osnet_x0_25_msmt17.pt',  # model.pt path,
@@ -181,7 +208,8 @@ def run(
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
 ):
-
+    global all_result
+    all_result = {}
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     is_file = Path(source).suffix[1:] in (VID_FORMATS)
@@ -208,27 +236,12 @@ def run(
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
     # Load face classifier model
-    # create model
-    #face_model_type = "vggnet" #"resnet50"
     face_model_type = "embeded_FR"
-    model_checkpoints = "resnet50_face_classifier/checkpoint-19.pth.tar" #checkpoint-32.pth.tar"
-    number_of_person = 8 #9
     face_name = ["GOWTHAMI", "KARTHIK", "KIRAN", "MANIKCHAND", "NITIN", "PAVAN", "RAJU", "RAKSHITA", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
-    if face_model_type == "resnet50":
-        face_model = create_model(
-            face_model_type,
-            num_classes=number_of_person,
-            in_chans=3,
-            pretrained=False,
-            checkpoint_path=model_checkpoints)
-        face_model = face_model.cuda()
-        face_model.eval()
     # Imagezmq Sender
     import imagezmq
     sender = imagezmq.ImageSender(connect_to='tcp://*:5555', REQ_REP=False)
     host_name = 'From Sender'
-    # OpenCV facedetection model 
-    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
     # Dataloader
     if webcam:
         show_vid = False #check_imshow()
@@ -267,14 +280,9 @@ def run(
     model.warmup(imgsz=(1 if pt else nr_sources, 3, *imgsz))  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
     curr_frames, prev_frames = [None] * nr_sources, [None] * nr_sources
-    gender_model_path = "face_classification.model"
-    gender_model = load_model(gender_model_path)
-    gender_classes = ["GOWTHAMI", "NITIN", "PAVAN", "RAJU", "SANTHA", "SONU", "SRIDHAR", "SUJAY", "VIDYA"]
     gender_label = "Unknown"
-    unique_seen_count_bilboard = {"male":[],"female":[]}
     #TODO record attendence and trackID
     person_attendence = []
-    #attendence_record = []
     curr_date = None
     curr_time = None
     is_csv_dumped = False
@@ -284,38 +292,31 @@ def run(
     field_names = ['EmpoloyeeName', 'Availibilty', 'AttendenceTime', "EntranceId"]
     #Loading Embeded classifier
     face_model_type = "embeded_FR"
-    employees = dict()
     known_people_folder = None
     buffer_length = 2 
     id_buffer_len = 80
-    if face_model_type == "embeded_classifier":
-        # Get similar images of test images for ResNet-50 (b)
-        resnet_model_b = getResNet50Model(lastFourTrainable=True)
-        resnet_model_b.load_weights('./model_resnet_trainable.h5')
-        feature_model_resnet_b = Model(inputs=resnet_model_b.input, outputs=resnet_model_b.get_layer('new_fc').output)
-
-        df = pd.read_pickle('./features_resnet_b.pickle')
-        #for file in feature_test_files:
-    elif face_model_type == "embeded_FR":
+    known_face_encodings = []
+    if face_model_type == "embeded_FR":
         known_people_folder = "./face_recognition_embedding/data"
-        known_face_encodings = []
         known_names = []
-        for person_name in face_name:
-            img_to_read = f"{known_people_folder}/{person_name}.jpg"
-            img_path = None
-            if os.path.isfile(f"{known_people_folder}/{person_name}.jpg"):
-                img_path = img_to_read
-            elif os.path.isfile(f"{known_people_folder}/{person_name}.jpeg"):
-                img_path = f"{known_people_folder}/{person_name}.jpeg"
-            else:
-                img_path =  f"{known_people_folder}/{person_name}.png"
-            print(f"img_path: {img_path}")
-            if os.path.isfile(img_path):
-                person_image = face_recognition.load_image_file(img_path) 
-                person_face_encoding = face_recognition.face_encodings(person_image)[0]
-                known_face_encodings.append(person_face_encoding)
-                known_names.append(person_name)
-        #known_names, known_face_encodings = scan_known_people(known_people_folder)
+        if os.path.isfile("./feats.npy"):
+            known_face_encodings = np.load('feats.npy')
+        else:
+            for person_name in face_name:
+                img_to_read = f"{known_people_folder}/{person_name}.jpg"
+                img_path = None
+                if os.path.isfile(f"{known_people_folder}/{person_name}.jpg"):
+                    img_path = img_to_read
+                elif os.path.isfile(f"{known_people_folder}/{person_name}.jpeg"):
+                    img_path = f"{known_people_folder}/{person_name}.jpeg"
+                else:
+                    img_path =  f"{known_people_folder}/{person_name}.png"
+                print(f"img_path: {img_path}")
+                if os.path.isfile(img_path):
+                    person_image = face_recognition.load_image_file(img_path) 
+                    person_face_encoding = face_recognition.face_encodings(person_image)[0]
+                    known_face_encodings.append(person_face_encoding)
+                    known_names.append(person_name)
     for person_name in face_name:
         temp_attendence = {}
         temp_attendence["EmpoloyeeName"] = person_name
@@ -330,7 +331,6 @@ def run(
     #client = MongoClient('mongodb://localhost:27017/')
     db = client["attendance"]
     daily = db.daily
-
     last_tracked_id = []
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
@@ -439,38 +439,7 @@ def run(
                             face_gamma = None
                             person_crop = deep_im0[int(output[1]):int(output[3]), int(output[0]):int(output[2])]
                             # apply face classifier on face
-                            if face_model_type == "vggnet": 
-                                face_crop = cv2.resize(person_crop, (112,112))
-                                face_crop = face_crop.astype("float") / 255.0
-                                face_crop = img_to_array(face_crop)
-                                face_crop = np.expand_dims(face_crop, axis=0)
-                                gender_conf = gender_model.predict(face_crop)[0]
-                                # get label with max accuracy
-                                idx = np.argmax(gender_conf)
-                                gender_label = gender_classes[idx]
-                                #age_gender_label = f"{id} {label}: {conf:.2f}"
-                            elif face_model_type == "full_classifier":
-                                # Resnet50 preprocessing
-                                s_time = time.time()*1000
-                                face_crop = cv2.resize(person_crop, (112,112))
-                                resnet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-                                resnet_scale = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-                                face_crop_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-                                face_crop_rgb = face_crop_rgb.astype("float") / 255.0
-                                face_crop_rgb = (face_crop_rgb - resnet_mean) / resnet_scale
-                                face_crop_tensor = face_crop_rgb.transpose((2, 0, 1))
-                                face_crop_cuda = np.ndarray(shape=(1, 3, 112, 112),dtype=float)
-                                face_crop_cuda[0] = face_crop_tensor
-                                face_crop_cuda = torch.as_tensor(face_crop_cuda,device=torch.device('cuda'), dtype=torch.float)
-                                e_time = time.time()*1000
-                                print(f"ResNet50 preprocessing: {e_time-s_time} msec.")
-                                s_time = time.time()*1000
-                                labels = face_model(face_crop_cuda)
-                                e_time = time.time()*1000
-                                print(f"ResNet50 classifier infertime: {e_time-s_time} msec.")
-                                topk = labels.topk(3)[1].cpu().numpy()[0][0]
-                                gender_label = face_name[int(topk)]
-                            elif face_model_type == "embeded_FR":
+                            if face_model_type == "embeded_FR":
                                 #TODO Face gamma correction
                                 if is_face_visible:
                                     face_temp_gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
@@ -491,18 +460,12 @@ def run(
                                     print(f"len of face locations: {(face_locations)}")
                                     if len(face_locations):
                                         se_time = time.time()*1000
-                                        face_encodings = face_recognition.face_encodings(unknown_image, face_locations)
-                                        ee_time = time.time()*1000
-                                        print(f"time to get face embedding: {ee_time-se_time }msec")
-                                        print(f"len of face encodings: {len(face_encodings)}")
-                                        matches = face_recognition.compare_faces(known_face_encodings, face_encodings[0])
-                                        name = "Unknown"
-                                        face_distances = face_recognition.face_distance(known_face_encodings, face_encodings[0])
-                                        best_match_index = np.argmin(face_distances)
-                                        if matches[best_match_index]:
-                                            gender_label = face_name[best_match_index]
-                                        else:
-                                            gender_label = name
+                                        if id not in all_result:
+                                            all_result[id] = []
+                                            all_result[id].append("Unknown")
+                                        await asyncio.gather(calc_embedding(unknown_image, known_face_encodings, face_name, id))
+                                        print(f"all faces key : {all_result}")
+                                        gender_label = all_result[id][-1]
                                     e_time = time.time()*1000
                                     print(f"time taken to FR: {e_time-s_time}msec.")
                                 else:
@@ -561,7 +524,7 @@ def run(
                                             result = daily.delete_one(myquery)
                                         except:
                                             print("Not able to delete record!!")
-                                        person_attendence[temp_id[0]]["EntranceId"].remove(id_to_be_remove)
+                                        #person_attendence[temp_id[0]]["EntranceId"].remove(id_to_be_remove)
                                         
                                 #else:
                                 temp_index = temp_index[0]
@@ -690,13 +653,6 @@ def run(
                                 age_gender_label = f"{id} {label}: {conf:.2f}"
                                 print(f"age_gender_label: {age_gender_label}")
                                 if is_face_visible and names[c] == "head":
-                                    #Id = label.strip().split(" ")[0]
-                                    if label not in unique_seen_count_bilboard:
-                                        unique_seen_count_bilboard[label] = []
-                                    if id not in unique_seen_count_bilboard[label]:
-                                        unique_seen_count_bilboard[label].append(id)
-                                    #label = None if hide_labels else (f'{id} {names[c]}' if hide_conf else \
-                                    #    (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
                                     annotator.box_label(bboxes, age_gender_label, color=colors(c, True))
                                 if save_crop:
                                     txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
@@ -739,7 +695,7 @@ def run(
         if curr_time:
             saving_hh, saving_mm, _ = curr_time.split(":")
             print(f"saving_hh: {saving_hh}, saving_mm: {saving_mm}")
-            if (f"{saving_hh}:{saving_mm}"=="09:45") and not is_csv_dumped:
+            if (f"{saving_hh}:{saving_mm}"=="10:45") and not is_csv_dumped:
                 print("\n\n\ saving csv report!! \n\n!! ")
                 with open(f'{curr_date}.csv', 'w') as f:
                     # using csv.writer method from CSV package
@@ -747,7 +703,7 @@ def run(
                     is_csv_dumped = True
                     write.writeheader()
                     write.writerows(person_attendence)
-            elif (f"{saving_hh}:{saving_mm}"=="09:45") and is_csv_dumped:
+            elif (f"{saving_hh}:{saving_mm}"=="10:45") and is_csv_dumped:
                 print("GOING to stop pipeline!!")
                 sys.exit(0)
 
@@ -801,7 +757,7 @@ def parse_opt():
 
 def main(opt):
     check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
-    run(**vars(opt))
+    asyncio.run(run(**vars(opt)))
 
 
 if __name__ == "__main__":
